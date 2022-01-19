@@ -22,3 +22,10 @@ docs/
 
 # Code coverage
 *.lst
+
+
+# Visual Studio Code 2022-01-20
+.vs
+
+# for debug
+in.txt
