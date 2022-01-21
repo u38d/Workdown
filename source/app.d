@@ -24,6 +24,7 @@ class Converter(R) {
 
 	private int baseHeadingLevel;
 	private int sectionLevel;
+	private bool sectionContentsOpened;
 
 	public this(R range) {
 		this.range = range;
@@ -31,8 +32,9 @@ class Converter(R) {
 		ancestors = DList!string(new string[0]);
 		buffer = DList!string(new string[0]);
 
-		baseHeadingLevel = -1;
-		sectionLevel = 1;
+		baseHeadingLevel = 0;
+		sectionLevel = 0;
+		sectionContentsOpened = false;
 
 		popFront;
 	}
@@ -44,52 +46,93 @@ class Converter(R) {
 		auto line = range.front;
 		range.popFront;
 		line.chomp;
+		if (line.empty) {
+			return;
+		}
 
 		auto capture = matchFirst(line, headingRe);
 		if (cast(bool)capture) {
 			int headingLevel = cast(int)(capture[1].length);
 			assert(headingLevel >= 1 && headingLevel <= 6);
 
-			if (baseHeadingLevel <= 0) {
+			if (baseHeadingLevel == 0) {
 				baseHeadingLevel = headingLevel;
-			} else {
-				if (headingLevel <= baseHeadingLevel) {
-					throw new Exception("ベースの見出しのレベル以下の見出しが出現しました。");
-				}
-				if (headingLevel > sectionLevel + 1) {
-					throw new Exception("見出しのレベルが飛んでいます。");
-				}
-
-				foreach (i;0..sectionLevel + 1 - headingLevel) {
-					closeElement("section");
-				}
-				openElement("section");
+				sectionLevel = headingLevel - 1;
 			}
-			buffer.insertBack(format("<h%s>%s</h%s>\n", headingLevel, capture[2], headingLevel));
+
+			if (headingLevel < baseHeadingLevel) {
+				throw new Exception("最初の見出しよりも小さいレベルの見出しが出現しました。");
+			}
+			if (headingLevel > sectionLevel + 1) {
+				throw new Exception("見出しのレベルが飛んでいます。");
+			}
+
+			// headingレベル - 1までsectionを閉じる
+			foreach (i;0..sectionLevel - (headingLevel - 1)) {
+				closeElement("section");
+			}
+			openElement("section");
+
+			auto name = format("h%s", headingLevel);
+			putStartTag(name);
+			putString(capture[2].idup);
+			putEndTag(name);
+			putString("\n");
 		} else {
-			buffer.insertBack(format("<p>%s</p>\n", line));
+			openContentBlock();
+			putStartTag("p");
+			putString(line.idup);
+			putEndTag("p");
+			putString("\n");
 		}
+	}
+
+	public static string lf(string name) {
+		if (name == "section" || name == "div") {
+			return "\n";
+		} else {
+			return "";
+		}
+	}
+
+	private void putStartTag(string name) {
+		buffer.insertBack(format("<%s>%s", name, lf(name)));
+		ancestors.insertBack(name);
+	}
+
+	private void putEndTag(string name) {
+		assert(name == ancestors.back);
+
+		buffer.insertBack(format("</%s>%s", name, lf(name)));
+		ancestors.removeBack;
+	}
+
+	private void putString(string s) {
+		buffer.insertBack(s);
+	}
+
+	private void openContentBlock() {
+		if (sectionContentsOpened) {
+			return;
+		}
+		putStartTag("div");
+		sectionContentsOpened = true;
 	}
 
 	private void openElement(string name) {
-		buffer.insertBack(format("<%s>\n", name));
-		ancestors.insertBack(name);
+		putStartTag(name);
 		if (name == "section") {
+			sectionContentsOpened = false;
 			++sectionLevel;
 		}
-	}
-
-	private void closeElement() {
-		assert(!ancestors.empty);
-		closeElement(ancestors.back);
 	}
 
 	private void closeElement(string name) {
 		while (!ancestors.empty) {
 			auto current = ancestors.back;
-			ancestors.removeBack;
-			buffer.insertBack(format("</%s>\n", current));
+			putEndTag(current);
 			if (current == "section") {
+				sectionContentsOpened = false;
 				--sectionLevel;
 			}
 			if (current == name) {
@@ -101,7 +144,7 @@ class Converter(R) {
 
 	private void closeAllElement() {
 		foreach_reverse (e;ancestors) {
-			buffer.insertBack(format("</%s>\n", e));
+			putEndTag(e);
 		}
 		ancestors.clear();
 	}
