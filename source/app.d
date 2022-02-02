@@ -6,207 +6,289 @@ import std.string;
 import std.regex;
 import std.container;
 import std.range;
+import std.utf;
 
-/** 
- * # H1
- * ## H2
- * ### H3
- * #### H4
- * ##### H5
- * ###### H6
- */
+/+
 
-class ByLine {
-	DList!(char) buffer;
-	bool empty_;
+"#",
 
-	this() {
-		empty_ = true;
-	}
+"*", "[(", "![",
 
-	void put(char c) {
-		buffer.insertBack(c);
+行頭コマンド(最初のスペースまで)
+# Text
+	<h1>Text</h1>
 
-		if (empty_ && c == '\n') {
-			empty_ = false;
-		}
-	}
+## Text
+	<h2>Text</h2>
 
-	void put(string s) {
-		foreach (c;s) {
-			buffer.insertBack(c);
-		}
+### Text
+	<h3>Text</h3>
 
-		if (empty_ && s.indexOf('\n') >= 0) {
-			empty_ = false;
-		}
-	}
+#### Text
+	<h4>Text</h4>
 
-	bool empty() const @safe nothrow {
-		return empty_;
-	}
+##### Text
+	<h5>Text</h5>
 
-	string front() {
-		auto s = buffer[];
-		return s.take(s.indexOf('\n') + 1).array.idup;
-	}
+###### Text
+	<h6>Text</h6>
 
-	void popFront() {
-		buffer.removeFront(cast(size_t)((buffer[]).indexOf('\n') + 1));
-		empty_ = (buffer[]).indexOf('\n') == -1;
-	}
+Text
+	<p>Text</p>
+
+ Text
+	<p>Text<\p>
+
+[(http://example.com/){
+セクションを入れるせいで見出しが入れられない
+}]
+	<a href="http://example.com/">
+	<p>セクションを入れるせいで見出しが入れられない</p>
+	</a>
+
+行中コマンド
+Text *word*
+	<p>Text <em>word<\em></p>
+Text [(http://example.com/)Link]
+	<p>Text <a href="http://example.com">Link</a></p>
+![(http://example.com/image)Text]
+	<p><img alt="Text" src="http://example.com/image" /></p>
+
+\
+`
+*
+_
+{}
+[]
+()
+#
++
+-
+.
+!
+
++/
+
+enum InlineCommandHeadChars = "!*[]{}";
+
+enum HRe = ctRegex!(`^(#{1,6}) `);
+enum UlRe = ctRegex!(`^\* `);
+enum OlRe = ctRegex!(`^\. `);
+enum DtRe = ctRegex!(`^\+ `);
+
+enum ABlockStartRe = ctRegex!(`^\[\(([^\)]+)\)\{$`);
+enum ABlockEndRe = ctRegex!(`^\}\]$`);
+
+enum EmStartRe = ctRegex!(`^\*`);
+enum EmEndRe = EmStartRe;
+enum AInlineStartRe = ctRegex!(`^\[\(([^\)]+)\)`);
+enum AInlineEndRe = ctRegex!(`^\]`);
+enum ImgRe = ctRegex!(`^!\[\(([^\)]+)\)([^\)]+)\]`);
+
+enum HtmlSourceRe = ctRegex!(`^<`);
+
+enum Element {
+	Nothing,
+	em,
+	a,
+	ul,
+	ol,
+	dt,
+	div,
+	section,
 }
 
-class Node {
-	protected Node[] children;
 
+class Parser {
 	public static string escape(string s) {
 		s = s.replace("&", "&amp;");
 		s = s.replace("<", "&lt;");
 		s = s.replace(">", "&gt;");
 		s = s.replace("\"", "&quot;");
-		s = s.replace("\'", "&apos;");
+		s = s.replace("\'", "&#x27;");
 
 		return s;
 	}
-}
 
-class Element : Node {
-	enum LineBreak {
-		StartTag = 0x01,
-		EndTag = 0x02,
-		Both = StartTag | EndTag
-	}
+	private Element[] opened;
+	private Handler handler;
 
-	protected string name;
-	protected const string[string] attributes;
-	protected LineBreak lineBreak;
+	private size_t baseHeadingLevel;
 
-	public this(string name, LineBreak lineBreak) {
-		string[string] e;
-		this(name, lineBreak, e);
-	}
-
-	public this(string name, LineBreak lineBreak, const ref string[string] attributes) {
-		this.name = name.map!((c) => cast(char)(std.ascii.toLower(c))).array.idup;
-		this.lineBreak = lineBreak;
-		this.attributes = attributes;
-	}
-
-	public string startTagOpener() const @safe nothrow {
-		return "<";
-	}
-
-	public string startTagCloser() const @safe nothrow {
-		return ">";
-	}
-
-	public string endTagOpener() const @safe nothrow {
-		return "</";
-	}
-
-	public string endTagCloser() const @safe nothrow {
-		return ">";
-	}
-
-	public void putStartTag(R)(R dst) const {
-		dst.put(startTagOpener);
-		dst.put(name);
-
-		foreach (key, value;attributes) {
-			dst.put(' ');
-			dst.put(key);
-			dst.put(`="`);
-			dst.put(escape(value));
-			dst.put('\"');
-		}
-
-		dst.put(startTagCloser);
-
-		if (lineBreak & LineBreak.StartTag) {
-			dst.put('\n');
-		}
-	}
-
-	public void putEndTag(R)(R dst) const {
-		dst.put(endTagOpener);
-		dst.put(name);
-		dst.put(endTagCloser);
-		if (lineBreak | LineBreak.EndTag) {
-			dst.put('\n');
-		}
-	}
-}
-
-class EmptyElement : Element {
-	public this(string name, LineBreak lineBreak) {
-		super(name, lineBreak);
-	}
-
-	public this(string name, LineBreak lineBreak, const ref string[string] attributes) {
-		super(name, lineBreak, attributes);
-	}
-
-	public override string startTagCloser() const @safe nothrow {
-		return " />";
-	}
-
-	public override void putEndTag(R)(R) const {
-	}
-}
-
-class ElementTree(R) {
-	Element[] ancestors;
-	R outputRange;
-	size_t baseHeadingLevel;
-
-	this(R outputRange) {
-		this.outputRange = outputRange;
-		ancestors = new Element[0];
+	public this(Handler handler) {
+		this.handler = handler;
 		baseHeadingLevel = 0;
 	}
 
-	void openElement(string name, Element.LineBreak lineBreak, const ref string[string] attributes) {
-		auto e = new Element(name, lineBreak, attributes);
-		ancestors ~= e;
-		e.putStartTag(outputRange);
+	bool inUl() const {
+		return !opened.empty && opened.back == Element.ul;
+	}
+	bool inOl() const {
+		return !opened.empty && opened.back == Element.ol;
+	}
+	bool inDt() const {
+		return !opened.empty && opened.back == Element.dt;
 	}
 
-	void openElement(string name, Element.LineBreak lineBreak) {
-		string[string] e;
-		openElement(name, lineBreak, e);
+	public void close() {
+		while (!opened.empty) {
+			closeElement(opened.back);
+		}
 	}
 
-	void closeElement(string name) {
-		while (!ancestors.empty) {
-			auto e = ancestors.back;
-			ancestors.popBack;
+	private void closeElement(Element e) {
+		while (!opened.empty) {
+			auto c = opened.back;
 
-			e.putEndTag(outputRange);
+			if (c == Element.div) {
+				handler.divEnd();
+			} else if (c == Element.section) {
+				handler.sectionEnd();
+			} else if (c == Element.a) {
+				handler.aBlockEnd();
+			} else if (c == Element.ul) {
+				handler.ulEnd();
+			} else if (c == Element.ol) {
+//				handler.olEnd();
+			} else if (c == Element.dt) {
+//				handler.dtEnd();
+			} else {
+				writeln(c);
+				assert(false);
+			}
+			opened.popBack;
 
-			if (e.name == name) {
+			if (c == e) {
 				break;
 			}
 		}
 	}
 
-	void closeAllElement() {
-		foreach_reverse (e;ancestors) {
-			e.putEndTag(outputRange);
+	public void parseLine(string line) {
+		line = line.chomp;
+
+		if (auto captures = matchFirst(line, UlRe)) {
+			if (!inUl) {
+				opened ~= Element.ul;
+				handler.ulStart();
+			}
+			handler.liInlineStart();
+			parseInline(captures.post);
+			handler.liInlineEnd();
+			return;
+		} else if (inUl) {
+			closeElement(Element.ul);
 		}
 
-		ancestors.length = 0;
+		if (line.empty) {
+			return;
+		}
+
+		if (auto captures = matchFirst(line, HRe)) {
+			auto level = captures[1].length;
+			assert(level >= 1 && level <= 6);
+
+			adjustSectionLevel(level);
+
+			handler.hStart(cast(int)level);
+			parseInline(captures.post);
+			handler.hEnd(cast(int)level);
+		} else if (auto captures = matchFirst(line, ABlockStartRe)) {
+			opened ~= Element.a;
+			handler.aBlockStart(escape(captures[1]));
+		} else if (auto captures = matchFirst(line, ABlockEndRe)) {
+			closeElement(Element.a);
+		} else if (auto captures = matchFirst(line, HtmlSourceRe)) {
+			handler.htmlSource(line);
+		} else {
+			handler.pStart();
+			parseInline(line.strip);
+			handler.pEnd();
+		}
 	}
 
-	void insertText(string s) {
-		outputRange.put(Element.escape(s));
+	private void parseInline(string s) {
+		auto elementLevel = opened.length;
+		char[] token = new char[0];
+
+		for (;;) {
+			if (s.empty) {
+				break;
+			}
+
+			if (!token.empty && InlineCommandHeadChars.indexOf(s[0]) >= 0) {
+				handler.text(escape(token.idup));
+				token.length = 0;
+			}
+
+			auto last = Element.Nothing;
+			if (!opened.empty) {
+				last = opened.back;
+			}
+
+			switch (last) {
+			case Element.em:
+				if (auto captures = matchFirst(s, EmEndRe)) {
+					s = s[captures[0].length..$];
+					opened.popBack;
+					handler.emEnd;
+					continue;
+				}
+				break;
+			case Element.a:
+				if (auto captures = matchFirst(s, AInlineEndRe)) {
+					s = s[captures[0].length..$];
+					opened.popBack;
+					handler.aInlineEnd;
+					continue;
+				}
+				break;
+			default:
+			}
+
+			if (auto captures = matchFirst(s, EmStartRe)) {
+				s = s[captures[0].length..$];
+				opened ~= Element.em;
+				handler.emStart();
+				continue;
+			} else if (auto captures = matchFirst(s, AInlineStartRe)) {
+				s = s[captures[0].length..$];
+				opened ~= Element.a;
+				handler.aInlineStart(escape(captures[1]));
+				continue;
+			} else if (auto captures = matchFirst(s, ImgRe)) {
+				s = s[captures[0].length..$];
+				handler.img(escape(captures[1]), escape(captures[2]));
+				continue;
+			}
+
+			if (s.empty) {
+				break;
+			}
+			// \でエスケープしつつtokenに追加
+			if (s.length >= 2 && s[0] == '\\') {
+				auto st = std.utf.stride(s, 1);
+				token ~= s[1..st + 1];
+				s = s[st + 1..$];
+			} else {
+				auto st = std.utf.stride(s);
+				token ~= s[0..st];
+				s = s[st..$];
+			}
+		}
+
+		assert(elementLevel == opened.length);
+		if (!token.empty) {
+			handler.text(escape(token.idup));
+		}
 	}
 
 	void adjustSectionLevel(size_t targetLevel) {
 		assert(targetLevel >= 1 && targetLevel <= 6);
 
 		if (baseHeadingLevel == 0) {
-			openElement("section", Element.LineBreak.Both);
+			opened ~= Element.section;
+			handler.sectionStart();
 			baseHeadingLevel = targetLevel;
 			return;
 		}
@@ -215,122 +297,139 @@ class ElementTree(R) {
 			throw new Exception("最初の見出しのレベルより低いレベルの見出しが出現しました。");
 		}
 
-		auto sectionLevel = ancestors.count!((e) => e.name == "section");
+		auto sectionLevel = opened.count!((e) => e == Element.section);
 		if (targetLevel >= sectionLevel + 2) {
 			throw new Exception("見出しのレベルが飛んでいます。");
 		}
 
 		assert(sectionLevel + 1 >= targetLevel);
 		foreach (i;0..(sectionLevel + 1 - targetLevel)) {
-			closeElement("section");
+			closeElement(Element.section);
 		}
-		openElement("section", Element.LineBreak.Both);
+		opened ~= Element.section;
+		handler.sectionStart();
 	}
 }
 
-class Converter(R) {
-	private R range; // 行単位で取得できるレンジ
-	private ByLine buffer; // 出力バッファ
-	private ElementTree!ByLine tree;
+interface Handler {
+	// line head command
+	void hStart(int);
+	void hEnd(int);
+	void ulStart();
+	void ulEnd();
+	void liInlineStart();
+	void liInlineEnd();
+	void aBlockStart(string);
+	void aBlockEnd();
+	void pStart();
+	void pEnd();
 
-	public this(R range) {
-		this.range = range;
-		this.buffer = new ByLine;
-		this.tree = new ElementTree!ByLine(this.buffer);
+	// inline command
+	void aInlineStart(string);
+	void aInlineEnd();
+	void img(string, string);
+	void emStart();
+	void emEnd();
 
-		popFront;
+	void text(string);
+	void htmlSource(string);
+
+	void sectionStart();
+	void sectionEnd();
+	void divStart(string);
+	void divEnd();
+}
+
+class DefaultHandler : Handler {
+	private File outFile;
+
+	public this(ref File outFile) {
+		this.outFile = outFile;
 	}
 
-	public void popFront() {
-		if (!buffer.empty) {
-			buffer.popFront;
-			if (!buffer.empty) {
-				return;
-			}
-		}
-
-		while (buffer.empty && !range.empty) {
-			convertLine(range.front.idup);
-			range.popFront;
-		}
-
-		if (buffer.empty && range.empty) {
-			closeAll();
-		}
+	// line head command
+	void hStart(int level) {
+		outFile.writef("<h%s>", level);
+	}
+	void hEnd(int level) {
+		outFile.writefln("</h%s>", level);
+	}
+	void ulStart() {
+		outFile.writeln("<ul>");
+	}
+	void ulEnd() {
+		outFile.writeln("</ul>");
+	}
+	void liInlineStart() {
+		outFile.write("<li>");
+	}
+	void liInlineEnd() {
+		outFile.writeln("</li>");
+	}
+	void aBlockStart(string url) {
+		outFile.writefln(`<a href="%s">`, url);
+	}
+	void aBlockEnd() {
+		outFile.writeln("</a>");
+	}
+	void pStart() {
+		outFile.write("<p>");
+	}
+	void pEnd() {
+		outFile.writeln("</p>");
 	}
 
-	public string front() {
-		return buffer.front;
+	// inline command
+	void aInlineStart(string url) {
+		outFile.writef(`<a href="%s">`, url);
+	}
+	void aInlineEnd() {
+		outFile.write(`</a>`);
+	}
+	void img(string url, string altText) {
+		outFile.writef(`<img src="%s" alt="%s" />`, url, altText);
+	}
+	void emStart() {
+		outFile.write(`<em>`);
+	}
+	void emEnd() {
+		outFile.write(`</em>`);
 	}
 
-	public bool empty() {
-		return buffer.empty && range.empty;
+	void text(string text) {
+		outFile.writef("%s", text);
+	}
+	void htmlSource(string source) {
+		outFile.writeln(source);
 	}
 
-	private void convertLine(string line) {
-		line = line.chomp;
-		if (line.empty) {
-			return;
-		}
-
-		bool result = false;
-
-		result = heading(line);
-		if (result) {
-			return;
-		}
-
-		tree.openElement("p", Element.LineBreak.EndTag);
-		tree.insertText(line);
-		tree.closeElement("p");
+	void sectionStart() {
+		outFile.writeln("<section>");
 	}
-
-	private bool heading(string line) {
-		if (line[0] != '#') {
-			return false;
-		}
-		size_t level;
-		string name;
-		if (line.startsWith("# ")) {
-			name = "h1";
-			level = 1;
-		} else if (line.startsWith("## ")) {
-			name = "h2";
-			level = 2;
-		} else if (line.startsWith("### ")) {
-			name = "h3";
-			level = 3;
-		} else if (line.startsWith("#### ")) {
-			name = "h4";
-			level = 4;
-		} else if (line.startsWith("##### ")) {
-			name = "h5";
-			level = 5;
-		} else if (line.startsWith("###### ")) {
-			name = "h6";
-			level = 6;
-		} else {
-			return false;
-		}
-
-		tree.adjustSectionLevel(level);
-		tree.openElement(name, Element.LineBreak.EndTag);
-		tree.insertText(line[level + 1..$]);
-		tree.closeElement(name);
-
-		return true;
+	void sectionEnd() {
+		outFile.writeln("</section>");
 	}
-
-	private void closeAll() {
-		tree.closeAllElement();
+	void divStart(string className) {
+		outFile.writefln(`<div class="%s">`, className);
+	}
+	void divEnd() {
+		outFile.writeln("</div>");
 	}
 }
 
-void main() {
-	auto byLine = stdin.byLine;
-	auto converter = new Converter!(typeof(byLine))(byLine);
 
-	foreach (line;converter) {
-		write(line);
+void main(string[] args) {
+	File inFile = stdin, outFile = stdout;
+
+	if (args.length >= 3) {
+		inFile = File(args[1], "r");
+		outFile = File(args[2], "w");
 	}
+
+	auto parser = new Parser(new DefaultHandler(outFile));
+
+	foreach (line;inFile.byLine) {
+		parser.parseLine(line.idup);
+	}
+	parser.close();
 }
