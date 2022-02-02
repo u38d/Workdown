@@ -74,7 +74,7 @@ enum InlineCommandHeadChars = "!*[]{}";
 enum HRe = ctRegex!(`^(#{1,6}) `);
 enum UlRe = ctRegex!(`^\* `);
 enum OlRe = ctRegex!(`^\. `);
-enum DtRe = ctRegex!(`^\+ `);
+enum DlRe = ctRegex!(`^\+ `);
 
 enum ABlockStartRe = ctRegex!(`^\[\(([^\)]+)\)\{$`);
 enum ABlockEndRe = ctRegex!(`^\}\]$`);
@@ -93,7 +93,7 @@ enum Element {
 	a,
 	ul,
 	ol,
-	dt,
+	dl,
 	div,
 	section,
 }
@@ -126,8 +126,8 @@ class Parser {
 	bool inOl() const {
 		return !opened.empty && opened.back == Element.ol;
 	}
-	bool inDt() const {
-		return !opened.empty && opened.back == Element.dt;
+	bool inDl() const {
+		return opened.length >= 2 && (opened[$ - 1] == Element.dl || opened[$ - 2] == Element.dl);
 	}
 
 	public void close() {
@@ -150,10 +150,9 @@ class Parser {
 				handler.ulEnd();
 			} else if (c == Element.ol) {
 //				handler.olEnd();
-			} else if (c == Element.dt) {
-//				handler.dtEnd();
+			} else if (c == Element.dl) {
+				handler.dlEnd();
 			} else {
-				writeln(c);
 				assert(false);
 			}
 			opened.popBack;
@@ -167,17 +166,53 @@ class Parser {
 	public void parseLine(string line) {
 		line = line.chomp;
 
-		if (auto captures = matchFirst(line, UlRe)) {
-			if (!inUl) {
-				opened ~= Element.ul;
-				handler.ulStart();
+		if (inUl) {
+			if (auto captures = matchFirst(line, UlRe)) {
+				handler.liInlineStart();
+				parseInline(captures.post);
+				handler.liInlineEnd();
+				return;
+			} else {
+				closeElement(Element.ul);
 			}
+		} else if (auto captures = matchFirst(line, UlRe)) {
+			opened ~= Element.ul;
+			handler.ulStart();
 			handler.liInlineStart();
 			parseInline(captures.post);
 			handler.liInlineEnd();
 			return;
-		} else if (inUl) {
-			closeElement(Element.ul);
+		}
+
+		if (inDl) {// 複数dt, dd非対応
+			if (line.empty) {
+				closeElement(Element.dl);
+			} else if (auto captures = matchFirst(line, DlRe)) {
+				// 二つ目以降の要素
+				opened ~= Element.div;
+				handler.divStart();
+
+				handler.dtStart();
+				parseInline(captures.post);
+				handler.dtEnd();
+				return;
+			} else {
+				handler.ddStart();
+				parseInline(line);
+				handler.ddEnd();
+				closeElement(Element.div);
+				return;
+			}
+		} else if (auto captures = matchFirst(line, DlRe)) {
+			opened ~= Element.dl;
+			handler.dlStart();
+			opened ~= Element.div;
+			handler.divStart();
+
+			handler.dtStart();
+			parseInline(captures.post);
+			handler.dtEnd();
+			return;
 		}
 
 		if (line.empty) {
@@ -315,10 +350,19 @@ interface Handler {
 	// line head command
 	void hStart(int);
 	void hEnd(int);
+
 	void ulStart();
 	void ulEnd();
 	void liInlineStart();
 	void liInlineEnd();
+
+	void dlStart();
+	void dlEnd();
+	void dtStart();
+	void dtEnd();
+	void ddStart();
+	void ddEnd();
+
 	void aBlockStart(string);
 	void aBlockEnd();
 	void pStart();
@@ -336,6 +380,7 @@ interface Handler {
 
 	void sectionStart();
 	void sectionEnd();
+	void divStart();
 	void divStart(string);
 	void divEnd();
 }
@@ -354,6 +399,7 @@ class DefaultHandler : Handler {
 	void hEnd(int level) {
 		outFile.writefln("</h%s>", level);
 	}
+
 	void ulStart() {
 		outFile.writeln("<ul>");
 	}
@@ -366,6 +412,26 @@ class DefaultHandler : Handler {
 	void liInlineEnd() {
 		outFile.writeln("</li>");
 	}
+
+	void dlStart() {
+		outFile.writeln("<dl>");
+	}
+	void dlEnd() {
+		outFile.writeln("</dl>");
+	}
+	void dtStart() {
+		outFile.write("<dt>");
+	}
+	void dtEnd() {
+		outFile.writeln("</dt>");
+	}
+	void ddStart() {
+		outFile.write("<dd>");
+	}
+	void ddEnd() {
+		outFile.writeln("</dd>");
+	}
+
 	void aBlockStart(string url) {
 		outFile.writefln(`<a href="%s">`, url);
 	}
@@ -408,6 +474,9 @@ class DefaultHandler : Handler {
 	}
 	void sectionEnd() {
 		outFile.writeln("</section>");
+	}
+	void divStart() {
+		outFile.writeln("<div>");
 	}
 	void divStart(string className) {
 		outFile.writefln(`<div class="%s">`, className);
