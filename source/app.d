@@ -83,7 +83,7 @@ enum EmStartRe = ctRegex!(`^\*`);
 enum EmEndRe = EmStartRe;
 enum AInlineStartRe = ctRegex!(`^\[\(([^\)]+)\)`);
 enum AInlineEndRe = ctRegex!(`^\]`);
-enum ImgRe = ctRegex!(`^!\[\(([^\)]+)\)([^\)]+)\]`);
+enum ImgRe = ctRegex!(`^!\[\(([^\)]+)\)([^\]]*)\]`);
 
 enum HtmlSourceRe = ctRegex!(`^<`);
 
@@ -228,6 +228,8 @@ class Parser {
 			handler.hStart(cast(int)level);
 			parseInline(captures.post);
 			handler.hEnd(cast(int)level);
+			opened ~= Element.div;
+			handler.divStart("section-contents");
 		} else if (auto captures = matchFirst(line, ABlockStartRe)) {
 			opened ~= Element.a;
 			handler.aBlockStart(escape(captures[1]));
@@ -332,8 +334,9 @@ class Parser {
 			throw new Exception("最初の見出しのレベルより低いレベルの見出しが出現しました。");
 		}
 
-		auto sectionLevel = opened.count!((e) => e == Element.section);
+		auto sectionLevel = baseHeadingLevel + opened.count!((e) => e == Element.section) - 1;
 		if (targetLevel >= sectionLevel + 2) {
+			stderr.writeln(targetLevel, " ", sectionLevel);
 			throw new Exception("見出しのレベルが飛んでいます。");
 		}
 
